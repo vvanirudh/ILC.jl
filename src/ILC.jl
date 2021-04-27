@@ -104,27 +104,27 @@ function main_lds()
     state_size = 2
     action_size = 1
 
-    # A = zeros(state_size, state_size)
-    # B = zeros(state_size, action_size)
-    # A = [1. 1.; -3. 1.]
-    # B[1, 1] = 1.
-    # B[2, 1] = 3.
-    A = randn(state_size, state_size)
-    B = randn(state_size, action_size)
+    A = zeros(state_size, state_size)
+    B = zeros(state_size, action_size)
+    A = [1. 1.; -3. 1.]
+    B[1, 1] = 1.
+    B[2, 1] = 3.
+    # A = randn(state_size, state_size)
+    # B = randn(state_size, action_size)
 
-    # eps_A = 2.
-    # eps_B = 2.
-    eps_A = randn()
-    eps_B = randn()
+    eps_A = 3.
+    eps_B = 3.
+    # eps_A = randn()
+    # eps_B = randn()
     Ahat = A .+ eps_A * ones(state_size, state_size)
     Bhat = B .+ eps_B * ones(state_size, action_size)
 
     Q = Matrix{Float64}(I, state_size, state_size)
     R = Matrix{Float64}(I, action_size, action_size)
 
-    H = 10
+    H = 3
     T = 100
-    alpha = 1.0
+    alpha = 0.5
 
     x0 = 0.1 * ones(state_size)
 
@@ -147,7 +147,7 @@ function main_lds()
     @printf("\n==============================================\n")
     # ILC
     U_init = zeros(H, action_size)
-    ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true);
+    ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false);
     normalized_ilc_costs = [x - min_cost for x in ilc_costs]
 
     # Plot
@@ -164,11 +164,11 @@ end
 function main_pendulum()
     H = 20
     x0 = [pi/2; 0.5]
-    alpha = 1.0
-    T = 100
+    alpha = 0.1
+    T = 200
 
     env = Pendulum(H, x0, 1.0)
-    model = Pendulum(H, x0, 0.9)
+    model = Pendulum(H, x0, 1.1)
 
     @printf("\n==============================================\n")
     # iLQR using true dynamics
