@@ -28,3 +28,18 @@ function lqr(model::ENV, ∇F_x, ∇F_u, ∇C_x, ∇C_u, ∇2C_x, ∇2C_u)
     end
     return k, K
 end
+
+function tvlqr(A, B, Q, R, Qf)
+
+    H = length(A) + 1
+    n, m = size(B[1])
+    P = [zeros(n, n) for k=1:H]
+    K = [zeros(m, n) for k=1:H-1]
+
+    P[end] .= Qf
+    for k=reverse(1:H-1)
+        K[k] .= (R + B[k]'P[k+1]*B[k])\(B[k]'P[k+1]*A[k])
+        P[k] .= Q + A[k]'P[k+1]*A[k] - A[k]'P[k+1]*B[k]*K[k]
+    end
+    return K, P
+end

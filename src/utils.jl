@@ -56,3 +56,48 @@ function rollout(env::ENV, U_old; k=nothing, K=nothing, X_old=nothing, alpha=1.0
     end
     return X, U, cost
 end
+
+function linearize_around_ref(model::Acrobot, Xref, Uref, times)
+    N = length(times)
+    n = length(Xref[1])
+    m = length(Uref[1])
+    A = [zeros(n,n) for k = 1:N-1]
+    B = [zeros(n,m) for k = 1:N-1]
+    ∇f = RobotDynamics.DynamicsJacobian(model)
+    for k = 1:N-1
+        local t = times[k]
+        local dt = times[k+1] - times[k]
+        z = KnotPoint(SVector{n}(Xref[k]), SVector{m}(Uref[k]), dt, t)
+        discrete_jacobian!(RK4, ∇f, model, z)
+        A[k] .= ∇f.A
+        B[k] .= ∇f.B
+    end
+    return A, B
+end
+
+function lqr_cost(Q, R, Qf, X, U, N)
+    J = 0.0
+    for k=1:N-1
+        J += 0.5 * X[k]' * Q * X[k] + 0.5 * U[k]' * R * U[k]
+    end
+    J += 0.5 * X[end]' * Qf * X[end]
+    return J
+end
+
+function rollout(model::Acrobot, K, Xref, Uref, times; u_bnd=20.0, x0=Xref[1])
+    n,m = size(model)
+    N = length(K) + 1
+    X = [@SVector zeros(n) for k = 1:N]
+    U = [@SVector zeros(m) for k = 1:N-1]
+    X[1] = x0
+
+    for k=1:N-1
+        dt = times[k+1] - times[k]
+        U[k] = Uref[k] - K[k] * (X[k] - Xref[k])
+        U[k] = min.(u_bnd, max.(-u_bnd, U[k]))
+        z = KnotPoint(X[k], U[k], dt)
+        X[k+1] = discrete_dynamics(RK4, model, z)
+    end
+
+    return X, U
+end
