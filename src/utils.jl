@@ -101,3 +101,22 @@ function rollout(model::Acrobot, K, Xref, Uref, times; u_bnd=20.0, x0=Xref[1])
 
     return X, U
 end
+
+function rollout(x0, A, B, Q, R, Qf, H, K)
+    n = length(x0)
+    m = size(B, 2)
+
+    X = [zeros(n) for i=1:H+1]
+    U = [zeros(m) for i=1:H]
+
+    X[1] .= copy(x0)
+    c = 0.
+    for k=1:H
+        U[k] .= -K[k] * X[k]
+        X[k+1] .= A * X[k] + B * U[k]
+        c = c + X[k]' * Q * X[k] + U[k]' * R * U[k]
+    end
+    c = c + X[H+1]' * Qf * X[H+1]
+
+    return X, U, c
+end

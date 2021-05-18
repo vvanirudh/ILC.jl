@@ -43,3 +43,19 @@ function tvlqr(A, B, Q, R, Qf)
     end
     return K, P
 end
+
+function tvilc(A, B, Ahat, Bhat, Q, R, Qf)
+
+    H = length(A) + 1
+    n, m = size(B[1])
+    P = [zeros(n, n) for k=1:H]
+    K = [zeros(m, n) for k=1:H-1]
+
+    P[end] .= Qf
+    for k=reverse(1:H-1)
+        K[k] .= (R + Bhat[k]'P[k+1]*B[k]) \ (Bhat[k]'P[k+1]*A[k])
+        # P[k] .= Q + K[k]'R * K[k] + (Ahat[k] - Bhat[k]*K[k])'P[k+1]*(A[k] - B[k]*K[k])
+        P[k] .= Q + Ahat[k]'P[k+1] * A[k] - Ahat[k]'P[k+1]*B[k]*K[k]
+    end
+    return K, P
+end

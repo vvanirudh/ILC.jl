@@ -40,10 +40,20 @@ function lqr_control(env::ENV, U; verbose=false)
     # Solve lqr
     k, K = lqr(env, ∇F_x, ∇F_u, ∇C_x, ∇C_u, ∇2C_x, ∇2C_u)
     # Get new cost
-    _, _, c = rollout(env, U, k=k, K=K, X_old=X)
+    Xnew, Unew, c = rollout(env, U, k=k, K=K, X_old=X)
     @printf("(lqr) Final cost %f\n", c)
     push!(costs, c)
-    return costs
+    return Xnew, Unew, costs
+end
+
+function ricatti_solution(x0, A, B, Ahat, Bhat, Q, R, Qf, H)
+
+    # Compute tvlqr solution
+    K, P = tvlqr([Ahat for i=1:H], [Bhat for i=1:H], Q, R, Qf)
+
+    # Compute cost and trajectory
+    X, U, c = rollout(x0, A, B, Q, R, Qf, H, K)
+    return X, U, c
 end
 
 function model_based_control(env::ENV, model::ENV, U, T, alpha;
@@ -97,7 +107,7 @@ function model_based_control(env::ENV, model::ENV, U, T, alpha;
         push!(costs, c)
     end
     @printf("(Model-based) Final cost %f\n", c)
-    return costs
+    return Xmodel, Umodel, costs
 end
 
 function ilc_loop(env::ENV, model::ENV, U, T, alpha; line_search=false,
@@ -116,7 +126,7 @@ function ilc_loop(env::ENV, model::ENV, U, T, alpha; line_search=false,
         k, K = lqr(model, ∇F_x, ∇F_u, ∇C_x, ∇C_u, ∇2C_x, ∇2C_u)
         if line_search
             alphac = alpha
-            for i=1:20
+            for i=1:100
                 Xnew, Unew, cnew = rollout(env, U, k=k, K=K, X_old=X,
                                            alpha=alphac)
                 if cnew < c
@@ -126,7 +136,7 @@ function ilc_loop(env::ENV, model::ENV, U, T, alpha; line_search=false,
                     X, U, c = copy(Xnew), copy(Unew), cnew
                     break
                 end
-                alphac = 0.5 * alphac                    
+                alphac = 0.9 * alphac
             end
         else
             # rollout
@@ -138,7 +148,18 @@ function ilc_loop(env::ENV, model::ENV, U, T, alpha; line_search=false,
         push!(costs, c)
     end
     @printf("(ILC) Final cost %f after %d iterations\n", c, T)
-    return costs
+    return X, U, costs
+end
+
+function ricatti_ilc_solution(x0, A, B, Ahat, Bhat, Q, R, Qf, H)
+
+    # Compute tvilc solution
+    K, P = tvilc([A for i=1:H], [B for i=1:H], [Ahat for i=1:H],
+                 [Bhat for i=1:H], Q, R, Qf)
+    # Compute cost and trajectory
+    X, U, c = rollout(x0, A, B, Q, R, Qf, H, K)
+    return X, U, c
+
 end
 
 function compute_sse(Xsim, Xref)
@@ -221,11 +242,41 @@ function run_ilc(model::Acrobot, env::Acrobot, altro, goal_constraint;
     return Xsim, Usim, goal_constraint_violations
 end
 
+function exp_lds()
 
-function main_lds()
+    # epsilons = [1e-3, 5e-3, 1e-2, 5e-2, 1e-1, 5e-1, 1e0]
+    epsilons = []
+    ϵ = 1e-3
+    while ϵ <= 10.0
+        push!(epsilons, ϵ)
+        ϵ *= 1.5
+    end
+    print(epsilons)
+    model_based_costs = []
+    ilc_costs = []
+    for i=1:length(epsilons)
+        ce_cost, ilc_cost = main_lds(epsilons[i], true)
+        push!(model_based_costs, ce_cost)
+        push!(ilc_costs, ilc_cost)
+    end
+    PyPlot.plot(epsilons, model_based_costs, label="CE")
+    PyPlot.plot(epsilons, ilc_costs, label="ILC")
+    #PyPlot.plot([3.1622, 3.1622], [minimum(ilc_costs), maximum(model_based_costs)])
+    xlabel("ϵ")
+    ylabel("Cost Suboptimality gap")
+    yscale("log")
+    xscale("log")
+    legend()
+    title("Linear Dynamical System with approximate model")
+    println(model_based_costs)
+    println(ilc_costs)
+end
+
+function main_lds(eps, no_plot=false)
     dimension = 1
     state_size = 2 * dimension
     action_size = dimension
+    h = 0.5  # stepsize
 
     A = zeros(state_size, state_size)
     B = zeros(state_size, action_size)
@@ -234,18 +285,30 @@ function main_lds()
     B[2, 1] = 3.
     # A = randn(state_size, state_size)
     # B = randn(state_size, action_size)
+
     # Double integrator dynamics
     # for i=1:dimension
     #     A[i, dimension+i] = 1.
     #     B[dimension+i, i] = 1.
     # end
+    # A[1, 1] = 1.0
+    # A[1, 2] = h
+    # A[2, 1] = 0.0
+    # A[2, 2] = 1.0
+    # B[1, 1] = 0.5*h^2
+    # B[2, 1] = h
 
-    eps_A = 1e-1
-    eps_B = 1e-1
+    println(opnorm(A))
+    println(opnorm(B))
+
+    eps_A = eps
+    eps_B = eps
     # eps_A = randn()
     # eps_B = randn()
-    Ahat = A .+ eps_A * ones(state_size, state_size)
-    Bhat = B .+ eps_B * ones(state_size, action_size)
+    # Ahat = A .+ eps_A * ones(state_size, state_size)
+    # Bhat = B .+ eps_B * ones(state_size, action_size)
+    Ahat = A .+ eps_A * Matrix{Float64}(I, state_size, state_size)
+    Bhat = B .+ eps_B * Matrix{Float64}(I, state_size, action_size)
 
     @printf("eps_A is %f\n", opnorm(Ahat-A))
     @printf("eps_B is %f\n", opnorm(Bhat-B))
@@ -255,7 +318,7 @@ function main_lds()
 
     H = 10
     T = 100
-    alpha = 1.
+    alpha = 1.0
 
     x0 = 0.1 * ones(state_size)
 
@@ -266,67 +329,134 @@ function main_lds()
     @printf("\n==============================================\n")
     # lqr control
     U_init = zeros(H, action_size)
-    lqr_costs = lqr_control(env, U_init);
+    _, _, init_cost = rollout(env, U_init)
+    # Xlqr, Ulqr, lqr_costs = lqr_control(env, U_init);
+    # min_cost = lqr_costs[end]
+    Xlqr, Ulqr, lqr_costs = model_based_control(env, env, U_init, T, 1.0)
     min_cost = lqr_costs[end]
+
+    Xricatti, Uricatti, ricatti_costs = ricatti_solution(x0, A, B, A, B, Q, R, Q, H)
+
+    # println(Ulqr)
+    # println(lqr_costs[end])
+    # println(Uricatti)
+    # println(ricatti_costs)
 
     @printf("\n==============================================\n")
     # Model-based control
     U_init = zeros(H, action_size)
-    model_based_costs = model_based_control(env, model, U_init, 1, 1.0);
+    Xmodel, Umodel, model_based_costs = model_based_control(env, model, U_init, T, 1.0);
     model_based_cost = model_based_costs[end]
     normalized_model_based_cost = model_based_cost - min_cost
+    normalized_model_based_costs = [init_cost - min_cost]
+    for k=1:T
+        push!(normalized_model_based_costs, normalized_model_based_cost)
+    end
+
+    Xmodelricatti, Umodelricatti, modelricatti_costs = ricatti_solution(
+        x0, A, B, Ahat, Bhat, Q, R, Q, H)
+
+    # println(Umodel)
+    # println(model_based_costs[end])
+    # println(Umodelricatti)
+    # println(modelricatti_costs)
     
     @printf("\n==============================================\n")
     # ILC
     U_init = zeros(H, action_size)
-    ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false);
+    Xilc, Uilc, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true);
     normalized_ilc_costs = [x - min_cost for x in ilc_costs]
 
-    # Plot
-    PyPlot.plot(0:T, normalized_ilc_costs, label="ILC")
-    PyPlot.plot(0:T, [normalized_model_based_cost for i=1:T+1],
-                label="Model-based")
-    xlabel("Iterations")
-    ylabel("Normalized cost")
-    yscale("log")
-    legend()
+    Xilcricatti, Uilcricatti, ilcricatti_costs = ricatti_ilc_solution(x0, A, B,
+                                                                      Ahat,
+                                                                      Bhat, Q,
+                                                                      R, Q, H)
+    # println(Uilc)
+    # println(ilc_costs[end])
+    # println(Uilcricatti)
+    # println(ilcricatti_costs)
 
-    @printf("Done")
+    # Plot
+    # if !no_plot
+    #     PyPlot.plot(0:T, normalized_ilc_costs, label="ILC")
+    #     PyPlot.plot(0:T, normalized_model_based_costs,
+    #                 label="CE")
+    #     xlabel("Iterations")
+    #     ylabel("Normalized cost")
+    #     yscale("log")
+    #     legend()
+    # end
+
+    @printf("Done\n")
+    # return normalized_model_based_costs[end], normalized_ilc_costs[end]
+    return modelricatti_costs - ricatti_costs, ilcricatti_costs - ricatti_costs
 end
 
-function main_pendulum()
+function exp_pendulum()
+
+    # Δms = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
+    Δms = []
+    Δm = 0.0
+    while Δm <= 0.25
+        push!(Δms, Δm)
+        Δm += 0.01
+    end
+    ilc_costs = []
+    ce_costs = []
+    for Δm in Δms
+        ce_cost, ilc_cost = main_pendulum(Δm, true)
+        push!(ce_costs, ce_cost)
+        push!(ilc_costs, ilc_cost)
+    end
+
+    PyPlot.plot(Δms, ce_costs, label="CE")
+    PyPlot.plot(Δms, ilc_costs, label="ILC")
+    PyPlot.plot(Δms, [60.022 for _ in Δms], label="Initial Controls")
+    xlabel("Δm")
+    ylabel("Cost suboptimality gap")
+    legend()
+    title("Inverted Pendulum with misspecified mass")
+end
+
+function main_pendulum(Δm, no_plot=false)
     H = 20
     x0 = [pi/2; 0.5]
     alpha = 0.1
     T = 200
 
     env = Pendulum(H, x0, 1.0)
-    model = Pendulum(H, x0, 1.1)
+    model = Pendulum(H, x0, 1.0 + Δm)
 
     @printf("\n==============================================\n")
     # iLQR using true dynamics
     U_init = zeros(H, env.action_size)
-    ilqr_costs = model_based_control(env, env, U_init, T, alpha,
+    _, _, init_cost = rollout(env, U_init)
+    @printf("initial cost %f\n", init_cost)
+    _, _, ilqr_costs = model_based_control(env, env, U_init, T, alpha,
                                      line_search=true)
 
     @printf("\n==============================================\n")
     # iLQR using model dynamics
     U_init = zeros(H, env.action_size)
-    model_based_costs = model_based_control(env, model, U_init, T, alpha,
+    _, _, model_based_costs = model_based_control(env, model, U_init, T, alpha,
                                             line_search=true)
 
     @printf("\n==============================================\n")
     # ILC using model dynamics
     U_init = zeros(H, env.action_size)
-    ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true)
+    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true)
     @printf("Done")
 
-    PyPlot.plot(1:T+1, ilqr_costs, label="iLQR true")
-    PyPlot.plot(1:T+1, model_based_costs, label="iLQR model")
-    PyPlot.plot(1:T+1, ilc_costs, label="ILC")
-    xlabel("Iterations")
-    ylabel("Cost")
-    legend()
+    if !no_plot
+        PyPlot.plot(1:T+1, ilqr_costs, label="iLQR true")
+        PyPlot.plot(1:T+1, model_based_costs, label="iLQR model")
+        PyPlot.plot(1:T+1, ilc_costs, label="ILC")
+        xlabel("Iterations")
+        ylabel("Cost")
+        legend()
+    end
+
+    return model_based_costs[end] - ilqr_costs[end], ilc_costs[end] - ilqr_costs[end]
 end
 
 function main_acrobot()
