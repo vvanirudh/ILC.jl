@@ -27,6 +27,8 @@ include("pendulum.jl")
 include("utils.jl")
 include("lqr.jl")
 include("qp.jl")
+include("cartpole.jl")
+include("planar_quad.jl")
 
 function lqr_control(env::ENV, U; verbose=false)
     X, U, c = rollout(env, U)
@@ -172,9 +174,9 @@ function compute_sse(Xsim, Xref)
 end
 
 function run_ilc(model::Acrobot, env::Acrobot, altro, goal_constraint;
-        verbose=true,
-        tol=1e-2
-    )
+                 verbose=true,
+                 tol=1e-2,
+                 max_iters=1000)
     # Get nominal trajectory
     Xref = states(altro)
     Uref = controls(altro);
@@ -219,6 +221,7 @@ function run_ilc(model::Acrobot, env::Acrobot, altro, goal_constraint;
     push!(goal_constraint_violations, norm(Xsim[end] - goal_constraint.xf))
     sse_old = compute_sse(Xsim, Xref)
 
+    n_iter = 1
     while true
         res = OSQP.solve!(qp)
         z = res.x
@@ -236,6 +239,10 @@ function run_ilc(model::Acrobot, env::Acrobot, altro, goal_constraint;
         if abs(sse_new - sse_old) < tol
             break
         end
+        if n_iter > max_iters
+            break
+        end
+        n_iter += 1
         sse_old = sse_new
     end
 
@@ -245,7 +252,15 @@ end
 function exp_lds()
     epsilons = []
     ϵ = 1e-3
-    while ϵ <= 10.0
+    dimension = 1
+    state_size = 2 * dimension
+    action_size = dimension
+    B = zeros(state_size, action_size)
+    B[1, 1] = 1.0
+    B[2, 1] = 3.0
+    norm_B = opnorm(B)
+    while ϵ < norm_B
+    # while ϵ < 10.0
         push!(epsilons, ϵ)
         ϵ *= 1.5
     end
@@ -339,28 +354,29 @@ function exp_pendulum()
     ilc_costs = []
     ce_costs = []
     for Δm in Δms
-        ce_cost, ilc_cost = main_pendulum(Δm, true)
+        ce_cost, ilc_cost = main_pendulum(Δm, no_plot=true)
         push!(ce_costs, ce_cost)
         push!(ilc_costs, ilc_cost)
     end
 
     PyPlot.plot(Δms, ce_costs, label="CE")
     PyPlot.plot(Δms, ilc_costs, label="ILC")
-    PyPlot.plot(Δms, [60.022 for _ in Δms], label="Initial Controls")
+    # PyPlot.plot(Δms, [60.022 for _ in Δms], label="Initial Controls")
     xlabel("Δm")
     ylabel("Cost suboptimality gap")
     legend()
     title("Inverted Pendulum with misspecified mass")
 end
 
-function main_pendulum(Δm, no_plot=false)
+function main_pendulum(Δm; no_plot=false)
     H = 20
     x0 = [pi/2; 0.5]
     alpha = 0.1
     T = 200
+    ℓ = 1.0
 
-    env = Pendulum(H, x0, 1.0)
-    model = Pendulum(H, x0, 1.0 + Δm)
+    env = Pendulum(H, x0, 1.0, ℓ)
+    model = Pendulum(H, x0, 1.0 + Δm, ℓ)
 
     @printf("\n==============================================\n")
     # iLQR using true dynamics
@@ -368,18 +384,18 @@ function main_pendulum(Δm, no_plot=false)
     _, _, init_cost = rollout(env, U_init)
     @printf("initial cost %f\n", init_cost)
     _, _, ilqr_costs = model_based_control(env, env, U_init, T, alpha,
-                                     line_search=true)
+                                     line_search=false)
 
     @printf("\n==============================================\n")
     # iLQR using model dynamics
     U_init = zeros(H, env.action_size)
     _, _, model_based_costs = model_based_control(env, model, U_init, T, alpha,
-                                            line_search=true)
+                                            line_search=false)
 
     @printf("\n==============================================\n")
     # ILC using model dynamics
     U_init = zeros(H, env.action_size)
-    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true)
+    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false)
     @printf("Done")
 
     if !no_plot
@@ -394,19 +410,196 @@ function main_pendulum(Δm, no_plot=false)
     return model_based_costs[end] - ilqr_costs[end], ilc_costs[end] - ilqr_costs[end]
 end
 
-function main_acrobot()
+
+function exp_cartpole()
+
+    Δms = []
+    Δm = 0.0
+    while Δm < 0.9
+        push!(Δms, Δm)
+        Δm += 0.05
+    end
+
+    ce_costs = []
+    ilc_costs = []
+    for Δm in Δms
+
+        ce_cost, ilc_cost = main_cartpole(Δm, no_plot=true)
+        push!(ce_costs, ce_cost)
+        push!(ilc_costs, ilc_cost)
+    end
+
+    PyPlot.plot(Δms, ce_costs, label="CE")
+    PyPlot.plot(Δms, ilc_costs, label="ILC")
+    xlabel("Δm")
+    ylabel("Cost suboptimality gap")
+    legend()
+
+end
+
+function main_cartpole(Δm; no_plot=false)
+
+    H = 100
+    x0 = [0.15, 0.05, 0.05, 0.05]
+    alpha = 1.0
+    T = 100
+
+    mc = 1.0
+    mp = 1.0
+    l = 0.5
+
+    Δmc = Δm
+    Δmp = -Δm
+    Δl = 0.0
+
+    env = Cartpole(mc, mp, l, x0, H, 0.0)
+    model = Cartpole(mc+Δmc, mp+Δmp, l+Δl, x0, H, 0.0)
+
+    @printf("\n==============================================\n")
+    # iLQR using true dynamics
+    U_init = ones(H, env.action_size)
+    _, _, init_cost = rollout(env, U_init)
+    @printf("initial cost %f\n", init_cost)
+    _, _, ilqr_costs = model_based_control(env, env, U_init, T, alpha,
+                                           line_search=false)
+
+    @printf("\n==============================================\n")
+    # iLQR using model dynamics
+    U_init = ones(H, env.action_size)
+    _, _, model_based_costs = model_based_control(env, model, U_init, T, alpha,
+                                                  line_search=false,
+                                                  verbose=false)
+
+    @printf("\n==============================================\n")
+    # ILC using model dynamics
+    U_init = ones(H, env.action_size)
+    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false,
+                               verbose=false)
+    @printf("Done")
+
+    if !no_plot
+        PyPlot.plot(1:T+1, ilqr_costs, label="iLQR true")
+        PyPlot.plot(1:T+1, model_based_costs, label="iLQR model")
+        PyPlot.plot(1:T+1, ilc_costs, label="ILC")
+        xlabel("Iterations")
+        ylabel("Cost")
+        yscale("log")
+        legend()
+    end
+
+    return model_based_costs[end] - ilqr_costs[end], ilc_costs[end] - ilqr_costs[end]
+end
+
+function exp_quadrotor()
+
+    winds = []
+    wind = 0.5
+    while wind <= 5.0
+        push!(winds, wind)
+        wind += 0.5
+    end
+
+    ce_costs = []
+    ilc_costs = []
+    for wind in winds
+
+        ce_cost, ilc_cost = main_quadrotor(wind)
+        push!(ce_costs, ce_cost)
+        push!(ilc_costs, ilc_cost)
+    end
+
+    PyPlot.plot(winds, ce_costs, label="CE")
+    PyPlot.plot(winds, ilc_costs, label="ILC")
+    xlabel("wind")
+    ylabel("Cost suboptimality gap")
+    yscale("log")
+    legend()
+
+end
+
+
+function main_quadrotor(wind)
+
+    H = 60
+    alpha = 1.0
+    T = 100
+
+    mass = 1.0
+    ℓ = 0.3
+    x0 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    xf = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    # wind = -1.0
+
+    env = PlanarQuadrotor(mass, ℓ, x0, xf, H, wind)
+    model = PlanarQuadrotor(mass,ℓ, x0, xf, H, 0.0)
+
+    @printf("\n==============================================\n")
+    # iLQR using true dynamics
+    U_init = ones(H, env.action_size)
+    _, _, init_cost = rollout(env, U_init)
+    @printf("initial cost %f\n", init_cost)
+    _, _, ilqr_costs = model_based_control(env, env, U_init, T, alpha,
+                                           line_search=false)
+
+    @printf("\n==============================================\n")
+    # iLQR using model dynamics
+    U_init = ones(H, env.action_size)
+    _, _, model_based_costs = model_based_control(env, model, U_init, T, alpha,
+                                                  line_search=false,
+                                                  verbose=false)
+
+    @printf("\n==============================================\n")
+    # ILC using model dynamics
+    U_init = ones(H, env.action_size)
+    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false,
+                               verbose=false)
+    @printf("Done")
+
+    return model_based_costs[end] - ilqr_costs[end], ilc_costs[end] - ilqr_costs[end]
+end
+
+
+function exp_acrobot()
+
+    Δls = []
+    Δl = 0.0
+    while Δl <= 0.01
+        push!(Δls, Δl)
+        Δl += 0.001
+    end
+    ce_const_violations = []
+    ilc_const_violations = []
+    for Δl in Δls
+        ce_violation, ilc_violation = main_acrobot(Δl, no_plot=true,
+                                                   visualization=false)
+        push!(ce_const_violations, ce_violation)
+        push!(ilc_const_violations, ilc_violation)
+    end
+
+    PyPlot.plot(Δls, ce_const_violations, label="CE")
+    PyPlot.plot(Δls, ilc_const_violations,
+                label="ILC")
+    xlabel("Δl")
+    ylabel("Goal Constaint Violation")
+    yscale("log")
+    legend()
+end
+
+function main_acrobot(Δl; no_plot=false, visualization=true)
     l_model = @SVector [1.0, 1.0]
     m_model = @SVector [1.0, 1.0]
     J_model = @SVector [(1.0/12)*m_model[1]*l_model[1]*l_model[1],
                         (1.0/12)*m_model[2]*l_model[2]*l_model[2]]
 
-    l_true = @SVector [1.0-0.005, 1.0+0.004]
-    m_true = @SVector [1.0+0.01, 1.0-0.01]
+    # l_true = @SVector [1.0-0.005, 1.0+0.004]
+    l_true = @SVector [1.0 - Δl, 1.0 + Δl]
+    # m_true = @SVector [1.0+0.01, 1.0-0.01]
+    m_true = m_model
     J_true = @SVector [(1.0/12)*m_true[1]*l_true[1]*l_true[1],
                         (1.0/12)*m_true[2]*l_true[2]*l_true[2]]
 
     model = Acrobot(l_model, m_model, J_model, false)
-    env = Acrobot(l_true, m_true, J_true, true)
+    env = Acrobot(l_true, m_true, J_true, false)
 
     n, m = size(model)
 
@@ -465,8 +658,10 @@ function main_acrobot()
     solve!(altro_true)
 
     # Visualizer
-    vis = Visualizer()
-    TrajOptPlots.set_mesh!(vis, model)
+    if visualization
+        vis = Visualizer()
+        TrajOptPlots.set_mesh!(vis, model)
+    end
     # render(vis)
     # visualize!(vis, model, Tf, states(altro))
 
@@ -510,23 +705,28 @@ function main_acrobot()
 
     # Run ILC
     X_ilc, U_ilc, ilc_constraint_violations = run_ilc(model, env, altro_model,
-                                                      goal, tol=5e-3)
+                                                      goal, tol=1e-2)
 
     # Visualize
-    render(vis)
-    visualize!(vis, model, Tf, X_model, X_true, X_ilc, colors=[colorant"blue",
-                                                               colorant"red",
-                                                               colorant"green"])
+    if visualization
+        render(vis)
+        visualize!(vis, model, Tf, X_model, X_true, X_ilc, colors=[colorant"blue",
+                                                                   colorant"red",
+                                                                   colorant"green"])
+    end
 
     # Compare goal constraint violations
-    T = length(ilc_constraint_violations)
-    PyPlot.plot(0:T-1, ilc_constraint_violations, label="ilc")
-    PyPlot.plot(0:T-1, [model_constraint_violation for i=0:T-1], label="certainty
-    equivalent")
-    PyPlot.plot(0:T-1, [true_constraint_violation for i=0:T-1], label="true dynamics")
-    xlabel("Iterations")
-    ylabel("Goal Constraint Violation")
-    legend();
+    if !no_plot
+        T = length(ilc_constraint_violations)
+        PyPlot.plot(0:T-1, ilc_constraint_violations, label="ilc")
+        PyPlot.plot(0:T-1, [model_constraint_violation for i=0:T-1], label="certainty
+        equivalent")
+        PyPlot.plot(0:T-1, [true_constraint_violation for i=0:T-1], label="true dynamics")
+        xlabel("Iterations")
+        ylabel("Goal Constraint Violation")
+        legend();
+    end
+    return model_constraint_violation, ilc_constraint_violations[end]
 end
 
 end # module

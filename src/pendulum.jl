@@ -8,7 +8,11 @@ struct Pendulum <: ENV
     max_speed::Float64
     mass::Float64
     ℓ::Float64
-    Pendulum(H::Int64, x0::Array{Float64, 1}, mass::Float64) = new(2, 1, H, x0, 0.05, 8.0, 2.0, mass, 1.0)
+    Pendulum(
+        H::Int64,
+        x0::Array{Float64, 1},
+        mass::Float64,
+        ℓ::Float64) = new(2, 1, H, x0, 0.05, 8.0, 2.0, mass, ℓ)
 end
 
 function dynamics(model::Pendulum, x, u)
