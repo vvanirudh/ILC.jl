@@ -75,7 +75,7 @@ function model_based_control(env::ENV, model::ENV, U, T, alpha;
         k, K = lqr(model, ∇F_x, ∇F_u, ∇C_x, ∇C_u, ∇2C_x, ∇2C_u)
         if line_search
             alpha_found = false
-            for i=1:20
+            for i=1:5
                 Xmodel_new, Umodel_new, cmodel_new = rollout(
                     model, Umodel, k=k, K=K, X_old=Xmodel, alpha=alphac)
                 if cmodel_new < cmodel
@@ -128,7 +128,7 @@ function ilc_loop(env::ENV, model::ENV, U, T, alpha; line_search=false,
         k, K = lqr(model, ∇F_x, ∇F_u, ∇C_x, ∇C_u, ∇2C_x, ∇2C_u)
         if line_search
             alphac = alpha
-            for i=1:100
+            for i=1:5
                 Xnew, Unew, cnew = rollout(env, U, k=k, K=K, X_old=X,
                                            alpha=alphac)
                 if cnew < c
@@ -138,7 +138,7 @@ function ilc_loop(env::ENV, model::ENV, U, T, alpha; line_search=false,
                     X, U, c = copy(Xnew), copy(Unew), cnew
                     break
                 end
-                alphac = 0.9 * alphac
+                alphac = 0.5 * alphac
             end
         else
             # rollout
@@ -259,21 +259,27 @@ function exp_lds()
     B[1, 1] = 1.0
     B[2, 1] = 3.0
     norm_B = opnorm(B)
-    while ϵ < norm_B
+    sval = svdvals(B'B)[end]
+    bound = sval/norm_B
+    # println(svdvals(B'B), bound)
+    while ϵ < bound
     # while ϵ < 10.0
         push!(epsilons, ϵ)
         ϵ *= 1.5
     end
     print(epsilons)
     model_based_costs = []
+    ilcricatti_costs = []
     ilc_costs = []
     for i=1:length(epsilons)
-        ce_cost, ilc_cost = main_lds(epsilons[i])
+        ce_cost, ilcricatti_cost, ilc_cost = main_lds(epsilons[i])
         push!(model_based_costs, ce_cost)
+        push!(ilcricatti_costs, ilcricatti_cost)
         push!(ilc_costs, ilc_cost)
     end
     PyPlot.plot(epsilons, model_based_costs, label="CE")
-    PyPlot.plot(epsilons, ilc_costs, label="ILC")
+    PyPlot.plot(epsilons, ilcricatti_costs, label="ILC (closed form)")
+    # PyPlot.plot(epsilons, ilc_costs, label="ILC")
     xlabel("ϵ")
     ylabel("Cost Suboptimality gap")
     yscale("log")
@@ -340,8 +346,11 @@ function main_lds(eps)
                                                                       Bhat, Q,
                                                                       R, Q, H)
 
+    U_init = zeros(H, env.action_size)
+    Xilc, Uilc, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true)
+
     @printf("Done\n")
-    return modelricatti_costs - ricatti_costs, ilcricatti_costs - ricatti_costs
+    return modelricatti_costs - ricatti_costs, ilcricatti_costs - ricatti_costs,ilc_costs[end] - ricatti_costs
 end
 
 function exp_pendulum()
@@ -384,18 +393,18 @@ function main_pendulum(Δm; no_plot=false)
     _, _, init_cost = rollout(env, U_init)
     @printf("initial cost %f\n", init_cost)
     _, _, ilqr_costs = model_based_control(env, env, U_init, T, alpha,
-                                     line_search=false)
+                                     line_search=true)
 
     @printf("\n==============================================\n")
     # iLQR using model dynamics
     U_init = zeros(H, env.action_size)
     _, _, model_based_costs = model_based_control(env, model, U_init, T, alpha,
-                                            line_search=false)
+                                            line_search=true)
 
     @printf("\n==============================================\n")
     # ILC using model dynamics
     U_init = zeros(H, env.action_size)
-    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false)
+    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true)
     @printf("Done")
 
     if !no_plot
@@ -461,19 +470,19 @@ function main_cartpole(Δm; no_plot=false)
     _, _, init_cost = rollout(env, U_init)
     @printf("initial cost %f\n", init_cost)
     _, _, ilqr_costs = model_based_control(env, env, U_init, T, alpha,
-                                           line_search=false)
+                                           line_search=true)
 
     @printf("\n==============================================\n")
     # iLQR using model dynamics
     U_init = ones(H, env.action_size)
     _, _, model_based_costs = model_based_control(env, model, U_init, T, alpha,
-                                                  line_search=false,
+                                                  line_search=true,
                                                   verbose=false)
 
     @printf("\n==============================================\n")
     # ILC using model dynamics
     U_init = ones(H, env.action_size)
-    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false,
+    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=true,
                                verbose=false)
     @printf("Done")
 
@@ -493,16 +502,16 @@ end
 function exp_quadrotor()
 
     winds = []
-    wind = 0.5
-    while wind <= 5.0
+    wind = 0.1
+    while wind <= 10.0
         push!(winds, wind)
-        wind += 0.5
+        wind += 0.1
     end
 
     ce_costs = []
     ilc_costs = []
     for wind in winds
-
+        @printf("Wind %f\n", wind)
         ce_cost, ilc_cost = main_quadrotor(wind)
         push!(ce_costs, ce_cost)
         push!(ilc_costs, ilc_cost)
@@ -510,15 +519,15 @@ function exp_quadrotor()
 
     PyPlot.plot(winds, ce_costs, label="CE")
     PyPlot.plot(winds, ilc_costs, label="ILC")
-    xlabel("wind")
+    xlabel("η")
     ylabel("Cost suboptimality gap")
     yscale("log")
     legend()
-
+    title("Planar Quadrotor Control in Wind")
 end
 
 
-function main_quadrotor(wind)
+function main_quadrotor(wind; line_search=true)
 
     H = 60
     alpha = 1.0
@@ -526,8 +535,8 @@ function main_quadrotor(wind)
 
     mass = 1.0
     ℓ = 0.3
-    x0 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    xf = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    x0 = [-3.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    xf = [3.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     # wind = -1.0
 
     env = PlanarQuadrotor(mass, ℓ, x0, xf, H, wind)
@@ -535,23 +544,23 @@ function main_quadrotor(wind)
 
     @printf("\n==============================================\n")
     # iLQR using true dynamics
-    U_init = ones(H, env.action_size)
+    U_init = 0.5 * model.mass * model.g * ones(H, env.action_size)
     _, _, init_cost = rollout(env, U_init)
     @printf("initial cost %f\n", init_cost)
     _, _, ilqr_costs = model_based_control(env, env, U_init, T, alpha,
-                                           line_search=false)
+                                           line_search=line_search)
 
     @printf("\n==============================================\n")
     # iLQR using model dynamics
-    U_init = ones(H, env.action_size)
+    U_init = 0.5 * model.mass * model.g * ones(H, env.action_size)
     _, _, model_based_costs = model_based_control(env, model, U_init, T, alpha,
-                                                  line_search=false,
+                                                  line_search=line_search,
                                                   verbose=false)
 
     @printf("\n==============================================\n")
     # ILC using model dynamics
-    U_init = ones(H, env.action_size)
-    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=false,
+    U_init = 0.5 * model.mass * model.g * ones(H, env.action_size)
+    _, _, ilc_costs = ilc_loop(env, model, U_init, T, alpha, line_search=line_search,
                                verbose=false)
     @printf("Done")
 

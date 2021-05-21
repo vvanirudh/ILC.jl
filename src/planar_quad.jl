@@ -29,8 +29,8 @@ function cont_dynamics(model::PlanarQuadrotor, x, u)
     ÿ = (1/mass) * (u[1] + u[2]) * c - g
     θ̈ = (1/J) * (ℓ/2) * (u[2] - u[1])
 
-    ẍ += wind * posx
-    ÿ += wind * posy
+    ẍ += wind * posx * 1.0
+    ÿ += wind * posy * 1.0
 
     [x[4], x[5], x[6], ẍ, ÿ, θ̈]
 
@@ -50,9 +50,16 @@ end
 
 function cost(model::PlanarQuadrotor, x, u)
     xf = model.xf
-    cost = (x[1] - xf[1])^2 + (x[2] - xf[2])^2
-    cost += (u[1] - 0.5 * model.mass * model.g)^2
-    cost += (u[2] - 0.5 * model.mass * model.g)^2
+    uhover = [0.5 * model.mass * model.g, 0.5 * model.mass * model.g]
+
+    Q = Diagonal([ones(3); fill(0.5, 3)])
+    R = Diagonal(fill(1e-2, model.action_size))
+    cost = (x - xf)' * Q * (x - xf)
+    cost += (u - uhover)' * R * (u - uhover)
+    # cost = (x[1] - xf[1])^2 + (x[2] - xf[2])^2
+    # cost += (u[1] - 0.5 * model.mass * model.g)^2
+    # cost += (u[2] - 0.5 * model.mass * model.g)^2
+    # cost *= 10.0
     return cost
 end
 
