@@ -7,7 +7,7 @@ once you are inside the project root
 
 ## Reproducing Plots
 
-To reproduce the plots, run `ILC.exp_lds()` and `ILC.exp_pendulum()` in REPL.
+To reproduce the plots, run `ILC.exp_lds()`, `ILC.exp_pendulum()`, and `ILC.exp_quadrotor()` in REPL.
 
 ## Author
 
